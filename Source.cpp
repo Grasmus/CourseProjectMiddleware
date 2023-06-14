@@ -325,10 +325,11 @@ int main()
     {
         /*cout << "Enter something and press enter to continue: " << endl;
         cin >> smt;*/
-        // Тут баг, якщо один з компухтерів включається пізніше, а ти вже конектишся, то виводить
-        // ерори в консоль, але потім, коли другий комп(Коляс) все ж таки запускає прогу, то перший
-        // отримує повідомлення, але це вже після того як вивелись помилки!... Тобто для нормальної роботи
-        // потрібно запускати всі компи одночасно. А так все працює :) PS. Зря наїхав за створення сокета, там все норм.
+        // There's a bug here, if one of the computers turns on later, and you're already connected, it outputs
+        // errors to the console, but then, when the second computer (Wheelchair) still starts the program, the first one
+        // receives a message, but this is after the errors are displayed! That is, for normal operation
+        // you need to start all computers at the same time. And so everything works :) PS. I shouldn't have bothered to create a socket, everything is fine there.
+
         SOCKET nodeSocket{ connectToNode(nodeNames[i].pcAddress, DEFAULT_PORT) }; // <<<
 
         Data sendData{};
