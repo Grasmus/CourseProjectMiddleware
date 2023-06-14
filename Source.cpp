@@ -4,6 +4,10 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <Windows.h>
+#include <fstream>
+#include <limits>
+#include <random>
 
 #pragma comment (lib, "Ws2_32.lib")
 
@@ -21,6 +25,23 @@ struct Data
     int a;
     int b;
 };
+
+struct userAddressInfo 
+{
+    long long id{ 0 };
+    string pcAddress;
+};
+
+//================DATABASE PROTOTYPES=====================
+bool fileExists(const string& filename);
+long long generateUniqueId();
+void createDataBase(vector<userAddressInfo>* addresses);
+vector<userAddressInfo> readAddresses();
+void deleteAddressById(string filename, int idToDelete);
+void updateDataBase(string filename, vector<userAddressInfo>* users);
+void addAddressToDataBase(string filename, string newAddress);
+//================DATABASE PROTOTYPES=====================
+
 
 SOCKET generateSocket(PCSTR port)
 {
@@ -162,11 +183,12 @@ DWORD WINAPI readNewNode(LPVOID socketParam)
     return 0;
 }
 
-vector<string> getNodesData()
+vector<userAddressInfo> getNodesData()
 {
-    vector<string> nodeNames{};
+    vector<userAddressInfo> nodeNames{};
 
     //Get node names from db
+    nodeNames = readAddresses();
 
     return nodeNames;
 }
@@ -174,11 +196,10 @@ vector<string> getNodesData()
 SOCKET connectToNode(string nodeName, PCSTR port)
 {
     struct addrinfo* result = nullptr, * ptr = nullptr, hints{};
-
     hints.ai_family = AF_UNSPEC;
     hints.ai_protocol = IPPROTO_TCP;
     hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
+    hints.ai_flags = 0;
     hints.ai_addr = NULL;
     hints.ai_canonname = NULL;
     hints.ai_next = NULL;
@@ -229,6 +250,7 @@ SOCKET connectToNode(string nodeName, PCSTR port)
     return nodeSocket;
 }
 
+
 int main()
 {
     WSADATA wsaData{};
@@ -239,7 +261,23 @@ int main()
         cerr << "WSAStartup failed with error: " << iResult << endl;
         return 1;
     }
+    // =========================DATABASE====================================
+    int idToDelete;
+    string addressToAdd;
+    vector<userAddressInfo> addresses;
 
+    addresses.push_back({ generateUniqueId(),"DESKTOP-LT61FS4" });
+    addresses.push_back({ generateUniqueId(),"DESKTOP-09499TF" });
+    addresses.push_back({ generateUniqueId(),"DESKTOP-H2RFUD" });
+
+    if (fileExists("database.dat")) {
+        cout << "File already exists." << endl;
+    }
+    else {
+        createDataBase(&addresses);
+    }
+
+    // =========================DATABASE====================================
     SOCKET listenSocket{ generateSocket(DEFAULT_PORT) };
 
     if (listenSocket == -1)
@@ -272,16 +310,26 @@ int main()
         return 0;
     }
 
-    vector<string> nodeNames{ getNodesData() };
-
-    for (string nodeName : nodeNames)
+    vector<userAddressInfo> nodeNames{ getNodesData() };
+    for (size_t i = 0; i < nodeNames.size(); i++)
     {
-        nodes[nodeName] = false;
+        cout << nodeNames[i].pcAddress << endl;
     }
 
+    for (auto nodeName : nodeNames)
+    {
+        nodes[nodeName.pcAddress] = false;
+    }
+    string smt;
     for (size_t i{}; i < nodeNames.size(); i++)
     {
-        SOCKET nodeSocket{ connectToNode(nodeNames[i], DEFAULT_PORT) };
+        /*cout << "Enter something and press enter to continue: " << endl;
+        cin >> smt;*/
+        // Тут баг, якщо один з компухтерів включається пізніше, а ти вже конектишся, то виводить
+        // ерори в консоль, але потім, коли другий комп(Коляс) все ж таки запускає прогу, то перший
+        // отримує повідомлення, але це вже після того як вивелись помилки!... Тобто для нормальної роботи
+        // потрібно запускати всі компи одночасно. А так все працює :) PS. Зря наїхав за створення сокета, там все норм.
+        SOCKET nodeSocket{ connectToNode(nodeNames[i].pcAddress, DEFAULT_PORT) }; // <<<
 
         Data sendData{};
 
@@ -290,11 +338,13 @@ int main()
 
         sendMessage(nodeSocket, (char*)&sendData, sizeof(Data));
 
+        cout << "Sending message: " << sendData.a << " " << sendData.b << " to " << nodeNames[i].pcAddress << endl;
+
         int receiveData{};
 
         if (recv(nodeSocket, (char*)&receiveData, sizeof(int), NULL) <= 0)
         {
-            cerr << "Can`t receive data from: " << nodeNames[i] << endl;
+            cerr << "Can`t receive data from: " << nodeNames[i].pcAddress << endl;
 
             closesocket(nodeSocket);
 
@@ -303,11 +353,12 @@ int main()
 
         if (receiveData != sendData.a + sendData.b)
         {
-            cerr << "Invalid response from: " << nodeNames[i] << endl;
+            cerr << "Invalid response from: " << nodeNames[i].pcAddress << endl;
         }
         else
         {
-            nodes[nodeNames[i]] = true;
+            nodes[nodeNames[i].pcAddress] = true;
+            cout << "Message was received" << endl;
         }
     }
 
@@ -321,3 +372,97 @@ int main()
 
     return 0;
 }
+
+//================DATABASE REALIZATION=====================
+bool fileExists(const string& filename)
+{
+    ifstream file(filename);
+    return file.good();
+}
+void createDataBase(vector<userAddressInfo>* addresses) {
+    fstream file("database.dat", ios::in | ios::out | ios::app);
+
+    if (!file) {
+        cerr << "Failed to open the database file." << endl;
+        exit(EXIT_FAILURE);
+    }
+    for (const auto& address : *addresses) {
+        file << address.id << " " << address.pcAddress << '\n';
+    }
+    file.close();
+}
+vector<userAddressInfo> readAddresses() {
+    char hostname[64];
+    if (gethostname(hostname, sizeof(hostname)) == -1) {
+        cout << "Cannot get hostname." << endl;
+    };
+    vector<userAddressInfo> users;
+    userAddressInfo tempUser;
+    fstream file("database.dat", ios::in | ios::out | ios::app);
+    if (!file) {
+        cerr << "Failed to open the database file." << endl;
+        exit(EXIT_FAILURE);
+    }
+    while (file) {
+        file >> tempUser.id >> tempUser.pcAddress;
+        if (!file)
+            break;
+        if (tempUser.pcAddress != hostname) {
+            users.push_back(tempUser);
+        }
+    }
+    file.close();
+    return users;
+}
+void deleteAddressById(string filename, int idToDelete) {
+    ifstream inputFile(filename);
+    if (!inputFile) {
+        std::cerr << "Failed to open the database file." << std::endl;
+        return;
+    }
+    vector<userAddressInfo> addresses;
+    userAddressInfo tempAddress;
+    while (inputFile >> tempAddress.id >> tempAddress.pcAddress) {
+        if (tempAddress.id != idToDelete) {
+            addresses.push_back(tempAddress);
+        }
+    }
+    inputFile.close();
+    updateDataBase(filename, &addresses);
+}
+void updateDataBase(string filename, vector<userAddressInfo>* addresses) {
+    ofstream outputFile(filename, std::ios::trunc);
+    if (!outputFile) {
+        std::cerr << "Failed to open the database file for writing." << std::endl;
+        return;
+    }
+
+    for (const auto& address : *addresses) {
+        outputFile << address.id << ' ' << address.pcAddress << '\n';
+    }
+    outputFile.close();
+}
+void addAddressToDataBase(string filename, string newAddress) {
+    vector<userAddressInfo> addresses = readAddresses();
+    for (const auto& address : addresses) {
+        if (address.pcAddress == newAddress) {
+            cerr << "This address is already exists in database." << endl;
+            return;
+        }
+    }
+    ofstream file("database.dat", ios::app);
+    if (!file.is_open()) {
+        cerr << "Failed to open the database file in addAddressToDataBase." << endl;
+        return;
+    }
+    file << generateUniqueId() << " " << newAddress << '\n';
+    file.close();
+    cout << "Address was successfully added to database." << endl;
+}
+long long generateUniqueId() {
+    std::random_device rd;
+    std::mt19937_64 generator(rd());
+    std::uniform_int_distribution<long long> distribution;
+    return distribution(generator) % (10000000 + 1);
+}
+//================DATABASE REALIZATION=====================
