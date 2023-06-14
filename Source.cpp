@@ -326,7 +326,7 @@ int main()
         /*cout << "Enter something and press enter to continue: " << endl;
         cin >> smt;*/
         // There's a bug here, if one of the computers turns on later, and you're already connected, it outputs
-        // errors to the console, but then, when the second computer (Wheelchair) still starts the program, the first one
+        // errors to the console, but then, when the second computer (KOLYAS) still starts the program, the first one
         // receives a message, but this is after the errors are displayed! That is, for normal operation
         // you need to start all computers at the same time. And so everything works :) PS. I shouldn't have bothered to create a socket, everything is fine there.
 
