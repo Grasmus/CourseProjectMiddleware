@@ -8,6 +8,7 @@
 #include <fstream>
 #include <limits>
 #include <random>
+#include <stdio.h>
 
 #pragma comment (lib, "Ws2_32.lib")
 
@@ -15,9 +16,6 @@
 #define DEFAULT_BUFLEN 512
 
 using namespace std;
-
-static bool exitThread{ false };
-static map<string, bool> nodes{};
 
 struct Data
 {
@@ -30,7 +28,20 @@ struct userAddressInfo
 {
     long long id{ 0 };
     string pcAddress;
+    bool isDecisionMakerCenter{};
 };
+
+struct Activity
+{
+    bool isActive{};
+    bool isDecisionMakerActive{}; //makes sense only if isDecisionMakerCenter = true
+};
+
+
+static bool exitThread{ false };
+static map<userAddressInfo, Activity> nodes{};
+static bool isDecisionMakerCenter{};
+static bool isDecisionMakerCenterActive{};
 
 //================DATABASE PROTOTYPES=====================
 bool fileExists(const string& filename);
@@ -41,7 +52,6 @@ void deleteAddressById(string filename, int idToDelete);
 void updateDataBase(string filename, vector<userAddressInfo>* users);
 void addAddressToDataBase(string filename, string newAddress);
 //================DATABASE PROTOTYPES=====================
-
 
 SOCKET generateSocket(PCSTR port)
 {
@@ -145,7 +155,7 @@ void sendMessage(SOCKET socket, const char* sendBuf, int size)
     }
 }
 
-DWORD WINAPI readNewNode(LPVOID socketParam)
+DWORD WINAPI connectNewNode(LPVOID socketParam)
 {
     SOCKET listenSocket{ *(SOCKET*)socketParam };
     int  activity{};
@@ -170,17 +180,59 @@ DWORD WINAPI readNewNode(LPVOID socketParam)
         {
             memcpy(&data, messageChunk, sizeof(Data));
 
-            int resonse{ data.a + data.b };
+            int response{ data.a + data.b };
 
-            sendMessage(clientSocket, (char*)&resonse, sizeof(int));
+            sendMessage(clientSocket, (char*)&response, sizeof(int));
+            sendMessage(clientSocket, (char*)&isDecisionMakerCenterActive, sizeof(bool));
 
-            nodes[data.nodeName] = true;
+            for (auto iter{ nodes.begin() }; iter != nodes.end(); iter++)
+            {
+                if (iter->first.pcAddress == data.nodeName)
+                {
+                    iter->second.isActive = true;
+
+                    if (isDecisionMakerCenter && isDecisionMakerCenterActive)
+                    {
+                        iter->second.isDecisionMakerActive = generateUniqueId() <= 7500000;
+
+                        sendMessage(clientSocket, (char*)&iter->second.isDecisionMakerActive, sizeof(bool));
+
+                        break;
+                    }
+                }
+            }
+        }
+        else if (size == sizeof(bool))
+        {
+            memcpy(&isDecisionMakerCenterActive, messageChunk, sizeof(bool));
         }
 
         closesocket(clientSocket);
     }
 
     return 0;
+}
+
+DWORD WINAPI decisionMaker(LPVOID socketParam)
+{
+    Sleep(60000);
+
+    if (isDecisionMakerCenterActive)
+    {
+        for (auto iter{ nodes.begin() }; iter != nodes.end(); iter++)
+        {
+            if (iter->second.isActive && iter->first.isDecisionMakerCenter)
+            {
+                SOCKET nodeSocket{ connectToNode(iter->first.pcAddress, DEFAULT_PORT) };
+
+                bool sendData = generateUniqueId() <= 7500000;
+
+                sendMessage(nodeSocket, (char*)&sendData, sizeof(Data));
+
+                cout << "decisionMaker of " << iter->first.pcAddress << " is " << sendData << endl;
+            }
+        }
+    }
 }
 
 vector<userAddressInfo> getNodesData()
@@ -250,7 +302,6 @@ SOCKET connectToNode(string nodeName, PCSTR port)
     return nodeSocket;
 }
 
-
 int main()
 {
     WSADATA wsaData{};
@@ -266,9 +317,9 @@ int main()
     string addressToAdd;
     vector<userAddressInfo> addresses;
 
-    addresses.push_back({ generateUniqueId(),"DESKTOP-LT61FS4" });
-    addresses.push_back({ generateUniqueId(),"DESKTOP-09499TF" });
-    addresses.push_back({ generateUniqueId(),"DESKTOP-H2RFUD" });
+    addresses.push_back({ generateUniqueId(),"DESKTOP-LT61FS4", true });
+    addresses.push_back({ generateUniqueId(),"DESKTOP-09499TF", true });
+    addresses.push_back({ generateUniqueId(),"DESKTOP-H2RFUD", true });
 
     if (fileExists("database.dat")) {
         cout << "File already exists." << endl;
@@ -278,6 +329,18 @@ int main()
     }
 
     // =========================DATABASE====================================
+
+    vector<userAddressInfo> nodesData{ getNodesData() };
+    for (size_t i = 0; i < nodesData.size(); i++)
+    {
+        cout << nodesData[i].pcAddress << endl;
+    }
+
+    for (auto nodeData : nodesData)
+    {
+        nodes[nodeData].isActive = false;
+    }
+
     SOCKET listenSocket{ generateSocket(DEFAULT_PORT) };
 
     if (listenSocket == -1)
@@ -287,41 +350,22 @@ int main()
         return 1;
     }
 
-    HANDLE connectNewClientThread
-    {
-        CreateThread(
-            NULL,
-            0,
-            readNewNode,
-            (LPVOID)&listenSocket,
-            0,
-            0
-        )
-    };
+    char hostname[100]{};
 
-    if (connectNewClientThread == NULL)
+    if (gethostname(hostname, sizeof(hostname)) == -1) 
     {
-        cerr << "Can't create thread connectNewClientThread" << endl;
-
-        closesocket(listenSocket);
+        cerr << "Cannot get hostname." << endl;
 
         WSACleanup();
 
-        return 0;
-    }
+        closesocket(listenSocket);
 
-    vector<userAddressInfo> nodeNames{ getNodesData() };
-    for (size_t i = 0; i < nodeNames.size(); i++)
-    {
-        cout << nodeNames[i].pcAddress << endl;
-    }
+        exit(1);
+    };
 
-    for (auto nodeName : nodeNames)
-    {
-        nodes[nodeName.pcAddress] = false;
-    }
     string smt;
-    for (size_t i{}; i < nodeNames.size(); i++)
+
+    for (size_t i{}; i < nodesData.size(); i++)
     {
         /*cout << "Enter something and press enter to continue: " << endl;
         cin >> smt;*/
@@ -330,22 +374,26 @@ int main()
         // receives a message, but this is after the errors are displayed! That is, for normal operation
         // you need to start all computers at the same time. And so everything works :) PS. I shouldn't have bothered to create a socket, everything is fine there.
 
-        SOCKET nodeSocket{ connectToNode(nodeNames[i].pcAddress, DEFAULT_PORT) }; // <<<
+        SOCKET nodeSocket{ connectToNode(nodesData[i].pcAddress, DEFAULT_PORT) }; // <<<
 
         Data sendData{};
+
+        memcpy(sendData.nodeName, hostname, sizeof(sendData.nodeName));
 
         sendData.a = 10;
         sendData.b = 65;
 
         sendMessage(nodeSocket, (char*)&sendData, sizeof(Data));
 
-        cout << "Sending message: " << sendData.a << " " << sendData.b << " to " << nodeNames[i].pcAddress << endl;
+        cout << "Sending message: " << sendData.a << " " << sendData.b << " to " << nodesData[i].pcAddress << endl;
 
         int receiveData{};
+        bool receiveIsDecisionMakerNodeActive{};
+        bool receiveIsDecisionMakerActive{};
 
         if (recv(nodeSocket, (char*)&receiveData, sizeof(int), NULL) <= 0)
         {
-            cerr << "Can`t receive data from: " << nodeNames[i].pcAddress << endl;
+            cerr << "Can`t receive data from: " << nodesData[i].pcAddress << endl;
 
             closesocket(nodeSocket);
 
@@ -354,18 +402,100 @@ int main()
 
         if (receiveData != sendData.a + sendData.b)
         {
-            cerr << "Invalid response from: " << nodeNames[i].pcAddress << endl;
+            cerr << "Invalid response from: " << nodesData[i].pcAddress << endl;
         }
         else
         {
-            nodes[nodeNames[i].pcAddress] = true;
+            nodes[nodesData[i]].isActive = true;
             cout << "Message was received" << endl;
+
+            if (nodesData[i].isDecisionMakerCenter && isDecisionMakerCenter)
+            {
+                if (recv(nodeSocket, (char*)&receiveIsDecisionMakerNodeActive, sizeof(bool), NULL) <= 0)
+                {
+                    cerr << "Can`t receive data from: " << nodesData[i].pcAddress << endl;
+
+                    closesocket(nodeSocket);
+
+                    continue;
+                }
+
+                if (receiveIsDecisionMakerNodeActive)
+                {
+                    if (recv(nodeSocket, (char*)&receiveIsDecisionMakerActive, sizeof(bool), NULL) <= 0)
+                    {
+                        cerr << "Can`t receive data from: " << nodesData[i].pcAddress << endl;
+
+                        closesocket(nodeSocket);
+
+                        continue;
+                    }
+
+                    isDecisionMakerCenterActive = receiveIsDecisionMakerActive;
+                }
+            }
+        }
+
+        closesocket(nodeSocket);
+    }
+
+    HANDLE connectNewNodeThread
+    {
+        CreateThread(
+            NULL,
+            0,
+            connectNewNode,
+            (LPVOID)&listenSocket,
+            0,
+            0
+        )
+    };
+
+    if (connectNewNodeThread == NULL)
+    {
+        cerr << "Can't create thread connectNewNodeThread" << endl;
+
+        closesocket(listenSocket);
+
+        WSACleanup();
+
+        return 1;
+    }
+
+    HANDLE decisionMakerCenterThread{};
+
+    if (isDecisionMakerCenter)
+    {
+        decisionMakerCenterThread =
+            CreateThread(
+                NULL,
+                0,
+                decisionMaker,
+                0,
+                0,
+                0
+            );
+
+        if (decisionMakerCenterThread == NULL)
+        {
+            cerr << "Can't create thread decisionMakerCenterThread" << endl;
+
+            exitThread = true;
+
+            WaitForSingleObject(connectNewNodeThread, INFINITE);
+
+            closesocket(listenSocket);
+
+            WSACleanup();
+
+            return 1;
         }
     }
 
     exitThread = true;
 
-    WaitForSingleObject(connectNewClientThread, INFINITE);
+    WaitForSingleObject(connectNewNodeThread, INFINITE);
+    WaitForSingleObject(decisionMakerCenterThread, INFINITE);
 
     closesocket(listenSocket);
 
@@ -388,7 +518,7 @@ void createDataBase(vector<userAddressInfo>* addresses) {
         exit(EXIT_FAILURE);
     }
     for (const auto& address : *addresses) {
-        file << address.id << " " << address.pcAddress << '\n';
+        file << address.id << " " << address.pcAddress << " " << address.isDecisionMakerCenter << '\n';
     }
     file.close();
 }
@@ -405,11 +535,15 @@ vector<userAddressInfo> readAddresses() {
         exit(EXIT_FAILURE);
     }
     while (file) {
-        file >> tempUser.id >> tempUser.pcAddress;
+        file >> tempUser.id >> tempUser.pcAddress >> tempUser.isDecisionMakerCenter;
         if (!file)
             break;
         if (tempUser.pcAddress != hostname) {
             users.push_back(tempUser);
+        }
+        else
+        {
+            isDecisionMakerCenter = tempUser.isDecisionMakerCenter;
         }
     }
     file.close();
@@ -423,7 +557,7 @@ void deleteAddressById(string filename, int idToDelete) {
     }
     vector<userAddressInfo> addresses;
     userAddressInfo tempAddress;
-    while (inputFile >> tempAddress.id >> tempAddress.pcAddress) {
+    while (inputFile >> tempAddress.id >> tempAddress.pcAddress >> tempAddress.isDecisionMakerCenter) {
         if (tempAddress.id != idToDelete) {
             addresses.push_back(tempAddress);
         }
@@ -439,7 +573,7 @@ void updateDataBase(string filename, vector<userAddressInfo>* addresses) {
     }
 
     for (const auto& address : *addresses) {
-        outputFile << address.id << ' ' << address.pcAddress << '\n';
+        outputFile << address.id << ' ' << address.pcAddress << ' ' << address.isDecisionMakerCenter << '\n';
     }
     outputFile.close();
 }
