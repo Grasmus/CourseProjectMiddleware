@@ -24,24 +24,21 @@ struct Data
     int b;
 };
 
-struct userAddressInfo 
-{
-    long long id{ 0 };
-    string pcAddress;
-    bool isDecisionMakerCenter{};
-    // new fields
-    bool isActive{};
-    bool isDecisionMakerActive{}; //makes sense only if isDecisionMakerCenter = true
-    //
-};
-
 struct Activity
 {
     bool isActive{};
     bool isDecisionMakerActive{}; //makes sense only if isDecisionMakerCenter = true
 };
 
+struct userAddressInfo 
+{
+    long long id{ 0 };
+    string pcAddress;
+    bool isDecisionMakerCenter{};
+    Activity activity{}; //makes sense only if isDecisionMakerCenter = true
+};
 
+static int decisionMakersAmount{};
 static bool exitThread{ false };
 static map<string, userAddressInfo> nodes{};
 static bool isDecisionMakerCenter{};
@@ -161,6 +158,13 @@ void sendMessage(SOCKET socket, const char* sendBuf, int size)
     }
 }
 
+long long generateNum(int min, int max) {
+    std::random_device rd;
+    std::mt19937_64 generator(rd());
+    std::uniform_int_distribution<long long> distribution(min, max);
+    return distribution(generator);
+}
+
 DWORD WINAPI connectNewNode(LPVOID socketParam)
 {
     SOCKET listenSocket{ *(SOCKET*)socketParam };
@@ -191,21 +195,15 @@ DWORD WINAPI connectNewNode(LPVOID socketParam)
             sendMessage(clientSocket, (char*)&response, sizeof(int));
             sendMessage(clientSocket, (char*)&isDecisionMakerCenterActive, sizeof(bool));
 
-            for (auto iter{ nodes.begin() }; iter != nodes.end(); iter++)
+            nodes[data.nodeName].activity.isActive = true;
+
+            if (isDecisionMakerCenter && isDecisionMakerCenterActive)
             {
-                if (iter->first, data.nodeName)
-                {
-                    iter->second.isActive = true;
+                nodes[data.nodeName].activity.isDecisionMakerActive = generateNum(0, decisionMakersAmount) >= decisionMakersAmount / 2;
 
-                    if (isDecisionMakerCenter && isDecisionMakerCenterActive)
-                    {
-                        iter->second.isDecisionMakerActive = generateUniqueId() <= 7500000;
+                sendMessage(clientSocket, (char*)&nodes[data.nodeName].activity.isDecisionMakerActive, sizeof(bool));
 
-                        sendMessage(clientSocket, (char*)&iter->second.isDecisionMakerActive, sizeof(bool));
-
-                        break;
-                    }
-                }
+                break;
             }
         }
         else if (size == sizeof(bool))
@@ -227,13 +225,13 @@ DWORD WINAPI decisionMaker(LPVOID socketParam)
     {
         for (auto iter{ nodes.begin() }; iter != nodes.end(); iter++)
         {
-            if (iter->second.isActive && iter->second.isDecisionMakerCenter)
+            if (iter->second.activity.isActive && iter->second.isDecisionMakerCenter)
             {
                 SOCKET nodeSocket{ connectToNode(iter->second.pcAddress, DEFAULT_PORT) };
 
-                bool sendData = generateUniqueId() <= 7500000;
+                bool sendData = generateNum(0, decisionMakersAmount) >= decisionMakersAmount / 2;
 
-                sendMessage(nodeSocket, (char*)&sendData, sizeof(Data));
+                sendMessage(nodeSocket, (char*)&sendData, sizeof(bool));
 
                 cout << "decisionMaker of " << iter->second.pcAddress << " is " << sendData << endl;
             }
@@ -255,6 +253,7 @@ vector<userAddressInfo> getNodesData()
 SOCKET connectToNode(string nodeName, PCSTR port)
 {
     struct addrinfo* result = nullptr, * ptr = nullptr, hints{};
+
     hints.ai_family = AF_UNSPEC;
     hints.ai_protocol = IPPROTO_TCP;
     hints.ai_socktype = SOCK_STREAM;
@@ -319,7 +318,9 @@ int main()
         cerr << "WSAStartup failed with error: " << iResult << endl;
         return 1;
     }
-    // =========================DATABASE====================================
+
+#pragma region database
+
     int idToDelete;
     string addressToAdd;
     vector<userAddressInfo> addresses;
@@ -335,18 +336,9 @@ int main()
         createDataBase(&addresses);
     }
 
-    // =========================DATABASE====================================
-
     vector<userAddressInfo> nodesData{ getNodesData() };
-    for (size_t i = 0; i < nodesData.size(); i++)
-    {
-        cout << nodesData[i].pcAddress << endl;
-    }
 
-    for (auto nodeData : nodesData)
-    {
-        nodes[nodeData.pcAddress].isActive = false;
-    }
+#pragma endregion
 
     SOCKET listenSocket{ generateSocket(DEFAULT_PORT) };
 
@@ -370,11 +362,32 @@ int main()
         exit(1);
     };
 
+    HANDLE connectNewNodeThread
+    {
+        CreateThread(
+            NULL,
+            0,
+            connectNewNode,
+            (LPVOID)&listenSocket,
+            0,
+            0
+        )
+    };
+
+    if (connectNewNodeThread == NULL)
+    {
+        cerr << "Can't create thread connectNewNodeThread" << endl;
+
+        closesocket(listenSocket);
+
+        WSACleanup();
+
+        return 1;
+    }
+
     string smt;
     
     bool ifTheOnlyDecisionMaker{ true };
-
-
 
     for (size_t i{}; i < nodesData.size(); i++)
     {
@@ -417,11 +430,14 @@ int main()
         }
         else
         {
-            nodes[nodesData[i].pcAddress].isActive = true;
+            nodes[nodesData[i].pcAddress].activity.isActive = true;
+
             cout << "Message was received" << endl;
 
             if (nodesData[i].isDecisionMakerCenter && isDecisionMakerCenter)
             {
+                decisionMakersAmount++;
+
                 if (recv(nodeSocket, (char*)&receiveIsDecisionMakerNodeActive, sizeof(bool), NULL) <= 0)
                 {
                     cerr << "Can`t receive data from: " << nodesData[i].pcAddress << endl;
@@ -450,31 +466,9 @@ int main()
         closesocket(nodeSocket);
     }
 
-    if (ifTheOnlyDecisionMaker) {
+    if (ifTheOnlyDecisionMaker && isDecisionMakerCenter)
+    {
         isDecisionMakerCenterActive = true;
-    }
-
-    HANDLE connectNewNodeThread
-    {
-        CreateThread(
-            NULL,
-            0,
-            connectNewNode,
-            (LPVOID)&listenSocket,
-            0,
-            0
-        )
-    };
-
-    if (connectNewNodeThread == NULL)
-    {
-        cerr << "Can't create thread connectNewNodeThread" << endl;
-
-        closesocket(listenSocket);
-
-        WSACleanup();
-
-        return 1;
     }
 
     HANDLE decisionMakerCenterThread{};
