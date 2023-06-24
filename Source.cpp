@@ -29,6 +29,10 @@ struct userAddressInfo
     long long id{ 0 };
     string pcAddress;
     bool isDecisionMakerCenter{};
+    // new fields
+    bool isActive{};
+    bool isDecisionMakerActive{}; //makes sense only if isDecisionMakerCenter = true
+    //
 };
 
 struct Activity
@@ -39,9 +43,11 @@ struct Activity
 
 
 static bool exitThread{ false };
-static map<userAddressInfo, Activity> nodes{};
+static map<string, userAddressInfo> nodes{};
 static bool isDecisionMakerCenter{};
 static bool isDecisionMakerCenterActive{};
+// We need to use protorypes
+SOCKET connectToNode(string nodeName, PCSTR port);
 
 //================DATABASE PROTOTYPES=====================
 bool fileExists(const string& filename);
@@ -187,7 +193,7 @@ DWORD WINAPI connectNewNode(LPVOID socketParam)
 
             for (auto iter{ nodes.begin() }; iter != nodes.end(); iter++)
             {
-                if (iter->first.pcAddress == data.nodeName)
+                if (iter->first, data.nodeName)
                 {
                     iter->second.isActive = true;
 
@@ -215,24 +221,25 @@ DWORD WINAPI connectNewNode(LPVOID socketParam)
 
 DWORD WINAPI decisionMaker(LPVOID socketParam)
 {
-    Sleep(60000);
+    Sleep(10000);
 
     if (isDecisionMakerCenterActive)
     {
         for (auto iter{ nodes.begin() }; iter != nodes.end(); iter++)
         {
-            if (iter->second.isActive && iter->first.isDecisionMakerCenter)
+            if (iter->second.isActive && iter->second.isDecisionMakerCenter)
             {
-                SOCKET nodeSocket{ connectToNode(iter->first.pcAddress, DEFAULT_PORT) };
+                SOCKET nodeSocket{ connectToNode(iter->second.pcAddress, DEFAULT_PORT) };
 
                 bool sendData = generateUniqueId() <= 7500000;
 
                 sendMessage(nodeSocket, (char*)&sendData, sizeof(Data));
 
-                cout << "decisionMaker of " << iter->first.pcAddress << " is " << sendData << endl;
+                cout << "decisionMaker of " << iter->second.pcAddress << " is " << sendData << endl;
             }
         }
     }
+    return 0;
 }
 
 vector<userAddressInfo> getNodesData()
@@ -338,7 +345,7 @@ int main()
 
     for (auto nodeData : nodesData)
     {
-        nodes[nodeData].isActive = false;
+        nodes[nodeData.pcAddress].isActive = false;
     }
 
     SOCKET listenSocket{ generateSocket(DEFAULT_PORT) };
@@ -364,17 +371,21 @@ int main()
     };
 
     string smt;
+    
+    bool ifTheOnlyDecisionMaker{ true };
+
+
 
     for (size_t i{}; i < nodesData.size(); i++)
     {
-        /*cout << "Enter something and press enter to continue: " << endl;
-        cin >> smt;*/
-        // There's a bug here, if one of the computers turns on later, and you're already connected, it outputs
-        // errors to the console, but then, when the second computer (KOLYAS) still starts the program, the first one
-        // receives a message, but this is after the errors are displayed! That is, for normal operation
-        // you need to start all computers at the same time. And so everything works :) PS. I shouldn't have bothered to create a socket, everything is fine there.
-
         SOCKET nodeSocket{ connectToNode(nodesData[i].pcAddress, DEFAULT_PORT) }; // <<<
+        if (!nodeSocket)
+            continue;
+        else {
+            if (nodesData[i].isDecisionMakerCenter && isDecisionMakerCenter) {
+                ifTheOnlyDecisionMaker = false;
+            }
+        }
 
         Data sendData{};
 
@@ -406,7 +417,7 @@ int main()
         }
         else
         {
-            nodes[nodesData[i]].isActive = true;
+            nodes[nodesData[i].pcAddress].isActive = true;
             cout << "Message was received" << endl;
 
             if (nodesData[i].isDecisionMakerCenter && isDecisionMakerCenter)
@@ -439,6 +450,10 @@ int main()
         closesocket(nodeSocket);
     }
 
+    if (ifTheOnlyDecisionMaker) {
+        isDecisionMakerCenterActive = true;
+    }
+
     HANDLE connectNewNodeThread
     {
         CreateThread(
@@ -466,6 +481,7 @@ int main()
 
     if (isDecisionMakerCenter)
     {
+        cout<<"DecisionMaker if start"<<endl;
         decisionMakerCenterThread =
             CreateThread(
                 NULL,
