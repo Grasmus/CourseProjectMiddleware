@@ -175,6 +175,8 @@ DWORD WINAPI connectNewNode(LPVOID socketParam)
     {
         SOCKET clientSocket{ establishConnection(listenSocket) };
 
+        cout << "Conecting to listenSocket" << endl;
+
         if (clientSocket == -1)
         {
             cerr << "Can't connect to client" << endl;
@@ -186,6 +188,8 @@ DWORD WINAPI connectNewNode(LPVOID socketParam)
 
         int size = recv(clientSocket, messageChunk, DEFAULT_BUFLEN - 1, 0);
 
+        cout << "ConnectNewNode Received:  " << messageChunk << endl;
+
         if (size == sizeof(Data))
         {
             memcpy(&data, messageChunk, sizeof(Data));
@@ -193,8 +197,9 @@ DWORD WINAPI connectNewNode(LPVOID socketParam)
             int response{ data.a + data.b };
 
             sendMessage(clientSocket, (char*)&response, sizeof(int));
+            cout << "ConnectNewNode Send:  " << response << endl;
             sendMessage(clientSocket, (char*)&isDecisionMakerCenterActive, sizeof(bool));
-
+            cout << "ConnectNewNode Send isDecisionMakerCenterActive:  " << isDecisionMakerCenterActive << endl;
             nodes[data.nodeName].activity.isActive = true;
 
             if (isDecisionMakerCenter && isDecisionMakerCenterActive)
@@ -202,12 +207,12 @@ DWORD WINAPI connectNewNode(LPVOID socketParam)
                 nodes[data.nodeName].activity.isDecisionMakerActive = generateNum(0, decisionMakersAmount) >= decisionMakersAmount / 2;
 
                 sendMessage(clientSocket, (char*)&nodes[data.nodeName].activity.isDecisionMakerActive, sizeof(bool));
-
-                break;
+                cout << "ConnectNewNode make center active:  " << nodes[data.nodeName].activity.isDecisionMakerActive << endl;
             }
         }
         else if (size == sizeof(bool))
         {
+            cout << "Become center:  " << messageChunk[0] << endl;
             memcpy(&isDecisionMakerCenterActive, messageChunk, sizeof(bool));
         }
 
@@ -219,24 +224,32 @@ DWORD WINAPI connectNewNode(LPVOID socketParam)
 
 DWORD WINAPI decisionMaker(LPVOID socketParam)
 {
-    Sleep(10000);
-
-    if (isDecisionMakerCenterActive)
-    {
-        for (auto iter{ nodes.begin() }; iter != nodes.end(); iter++)
+    while (!exitThread) {
+        Sleep(10000);
+        cout << "decisionMaker worked, wait 10 sec" << endl;
+        if (isDecisionMakerCenterActive)
         {
-            if (iter->second.activity.isActive && iter->second.isDecisionMakerCenter)
+            cout << "isDecisionMakerCenterActive if worked" << endl;
+            cout << "Size of nodes: " << nodes.size() << endl;
+
+            for (auto iter{ nodes.begin() }; iter != nodes.end(); iter++)
             {
-                SOCKET nodeSocket{ connectToNode(iter->second.pcAddress, DEFAULT_PORT) };
+                cout << "Iter second activity is active: " << iter->second.activity.isActive << endl;
+                cout << "Iter second activity is active: " << iter->second.isDecisionMakerCenter << endl;
+                if (iter->second.activity.isActive && iter->second.isDecisionMakerCenter)
+                {
+                    SOCKET nodeSocket{ connectToNode(iter->second.pcAddress, DEFAULT_PORT) };
 
-                bool sendData = generateNum(0, decisionMakersAmount) >= decisionMakersAmount / 2;
+                    bool sendData = generateNum(0, decisionMakersAmount) >= decisionMakersAmount / 2;
 
-                sendMessage(nodeSocket, (char*)&sendData, sizeof(bool));
+                    sendMessage(nodeSocket, (char*)&sendData, sizeof(bool));
 
-                cout << "decisionMaker of " << iter->second.pcAddress << " is " << sendData << endl;
+                    cout << "decisionMaker of " << iter->second.pcAddress << " is " << sendData << endl;
+                }
             }
         }
     }
+    
     return 0;
 }
 
@@ -263,14 +276,14 @@ SOCKET connectToNode(string nodeName, PCSTR port)
     hints.ai_next = NULL;
 
     int iResult = getaddrinfo(nodeName.c_str(), port, &hints, &result);
-
     if (iResult != 0)
     {
-        cerr << "getaddrinfo failed: " << iResult << endl;
+
+        cerr << "getaddrinfo failed: " << iResult<<" Name: "<< nodeName << endl;
 
         return 0;
     }
-
+    cout << "OK connectedToNode successfuly: " << nodeName << endl;
     int optval{ 1 };
 
     SOCKET nodeSocket{};
@@ -298,8 +311,6 @@ SOCKET connectToNode(string nodeName, PCSTR port)
 
     if (resultIterator == NULL)
     {
-        cerr << "Can`t connect to node: " << nodeName << endl;
-
         return 0;
     }
 
@@ -327,7 +338,7 @@ int main()
 
     addresses.push_back({ generateUniqueId(),"DESKTOP-LT61FS4", true });
     addresses.push_back({ generateUniqueId(),"DESKTOP-09499TF", true });
-    addresses.push_back({ generateUniqueId(),"DESKTOP-H2RFUD", true });
+    addresses.push_back({ generateUniqueId(),"DESKTOP-H2RFUD7", true });
 
     if (fileExists("database.dat")) {
         cout << "File already exists." << endl;
@@ -337,6 +348,11 @@ int main()
     }
 
     vector<userAddressInfo> nodesData{ getNodesData() };
+
+    for (size_t i = 0; i < nodesData.size(); i++)
+    {
+        nodes[nodesData[i].pcAddress] = nodesData[i];
+    }
 
 #pragma endregion
 
@@ -362,28 +378,7 @@ int main()
         exit(1);
     };
 
-    HANDLE connectNewNodeThread
-    {
-        CreateThread(
-            NULL,
-            0,
-            connectNewNode,
-            (LPVOID)&listenSocket,
-            0,
-            0
-        )
-    };
-
-    if (connectNewNodeThread == NULL)
-    {
-        cerr << "Can't create thread connectNewNodeThread" << endl;
-
-        closesocket(listenSocket);
-
-        WSACleanup();
-
-        return 1;
-    }
+    
 
     string smt;
     
@@ -391,6 +386,7 @@ int main()
 
     for (size_t i{}; i < nodesData.size(); i++)
     {
+        cout << "Connecting to:  " << nodesData[i].pcAddress << endl;
         SOCKET nodeSocket{ connectToNode(nodesData[i].pcAddress, DEFAULT_PORT) }; // <<<
         if (!nodeSocket)
             continue;
@@ -399,6 +395,8 @@ int main()
                 ifTheOnlyDecisionMaker = false;
             }
         }
+
+        cout << "Connected to " << nodesData[i].pcAddress << endl;
 
         Data sendData{};
 
@@ -466,13 +464,38 @@ int main()
         closesocket(nodeSocket);
     }
 
+
+
     if (ifTheOnlyDecisionMaker && isDecisionMakerCenter)
     {
         isDecisionMakerCenterActive = true;
     }
 
-    HANDLE decisionMakerCenterThread{};
+    HANDLE connectNewNodeThread
+    {
+        CreateThread(
+            NULL,
+            0,
+            connectNewNode,
+            (LPVOID)&listenSocket,
+            0,
+            0
+        )
+    };
 
+    if (connectNewNodeThread == NULL)
+    {
+        cerr << "Can't create thread connectNewNodeThread" << endl;
+
+        closesocket(listenSocket);
+
+        WSACleanup();
+
+        return 1;
+    }
+
+    HANDLE decisionMakerCenterThread{};
+    
     if (isDecisionMakerCenter)
     {
         cout<<"DecisionMaker if start"<<endl;
@@ -501,6 +524,8 @@ int main()
             return 1;
         }
     }
+
+    getchar();
 
     exitThread = true;
 
@@ -537,6 +562,7 @@ vector<userAddressInfo> readAddresses() {
     if (gethostname(hostname, sizeof(hostname)) == -1) {
         cout << "Cannot get hostname." << endl;
     };
+    cout << "Host name: " << hostname << endl;
     vector<userAddressInfo> users;
     userAddressInfo tempUser;
     fstream file("database.dat", ios::in | ios::out | ios::app);
@@ -549,6 +575,7 @@ vector<userAddressInfo> readAddresses() {
         if (!file)
             break;
         if (tempUser.pcAddress != hostname) {
+            cout << "Host name not skipped: " << tempUser.pcAddress << endl;
             users.push_back(tempUser);
         }
         else
@@ -557,6 +584,10 @@ vector<userAddressInfo> readAddresses() {
         }
     }
     file.close();
+    for (size_t i = 0; i < 2; i++)
+    {
+        cout << "Adress: " << users[i].pcAddress << " Center: " << users[i].isDecisionMakerCenter << endl;
+    }
     return users;
 }
 void deleteAddressById(string filename, int idToDelete) {
