@@ -7,9 +7,10 @@
 #include <Windows.h>
 #include <fstream>
 #include <limits>
-#include <random>
 #include <stdio.h>
 #include "Logger.h"
+#include "Structs.h"
+#include "Db.h"
 
 #pragma comment (lib, "Ws2_32.lib")
 
@@ -19,28 +20,8 @@ constexpr auto DECISIONMAKER_WAIT_MILIS = 10000;
 
 using namespace std;
 
-struct Data
-{
-    char nodeName[100]{};
-    int a;
-    int b;
-};
-
-struct Activity
-{
-    bool isActive{};
-    bool isDecisionMakerActive{}; //makes sense only if isDecisionMakerCenter = true
-};
-
-struct userAddressInfo 
-{
-    long long id{ 0 };
-    string pcAddress;
-    bool isDecisionMakerCenter{};
-    Activity activity{}; //makes sense only if isDecisionMakerCenter = true
-};
-
 static unique_ptr<loggernamespace::Logger> logger{};
+static unique_ptr<db::Db> database{};
 static int decisionMakersAmount{};
 static bool exitThread{ false };
 static map<string, userAddressInfo> nodes{};
@@ -48,17 +29,6 @@ static bool isDecisionMakerCenter{};
 static bool isDecisionMakerCenterActive{};
 // We need to use protorypes
 SOCKET connectToNode(string nodeName, PCSTR port);
-
-//================DATABASE PROTOTYPES=====================
-bool fileExists(const string& filename);
-long long generateUniqueId();
-void createDataBase(vector<userAddressInfo>* addresses);
-vector<userAddressInfo> readAddresses();
-void deleteAddressById(string filename, int idToDelete);
-void updateDataBase(string filename, vector<userAddressInfo>* users);
-void addAddressToDataBase(string filename, string newAddress);
-//================DATABASE PROTOTYPES=====================
-
 SOCKET generateSocket(PCSTR port)
 {
     struct addrinfo* result = nullptr, * ptr = nullptr, hints{};
@@ -131,7 +101,7 @@ SOCKET generateSocket(PCSTR port)
     }
 
     inet_ntop(result->ai_family, addr, ipstr, sizeof ipstr);
-
+    
     logger->setAddress(ipstr);
 
     freeaddrinfo(result);
@@ -269,11 +239,22 @@ DWORD WINAPI decisionMaker(LPVOID socketParam)
     return 0;
 }
 
-vector<userAddressInfo> getNodesData()
+vector<userAddressInfo> getNodesData(string hostname)
 {
     vector<userAddressInfo> nodeNames{};
 
-    nodeNames = readAddresses();
+    nodeNames = database->readAddresses(&isDecisionMakerCenter, hostname, std::move(logger));
+
+    logger = unique_ptr<loggernamespace::Logger>(new loggernamespace::Logger());
+
+    logger->initialize();
+
+    if (logger->isInitialized())
+    {
+        cerr << "Can't create logger" << endl;
+
+        exit(1);
+    }
 
     return nodeNames;
 }
@@ -347,6 +328,8 @@ int main()
         return 1;
     }
 
+    database = unique_ptr<db::Db>(new db::Db());
+
     WSADATA wsaData{};
     int iResult{ WSAStartup(MAKEWORD(2, 2), &wsaData) };
 
@@ -363,20 +346,44 @@ int main()
     string addressToAdd;
     vector<userAddressInfo> addresses;
 
-    addresses.push_back({ generateUniqueId(),"DESKTOP-LT61FS4", true });
-    addresses.push_back({ generateUniqueId(),"DESKTOP-09499TF", true });
-    addresses.push_back({ generateUniqueId(),"DESKTOP-H2RFUD7", true });
+    addresses.push_back({ database->generateUniqueId(),"DESKTOP-LT61FS4", true });
+    addresses.push_back({ database->generateUniqueId(),"DESKTOP-09499TF", true });
+    addresses.push_back({ database->generateUniqueId(),"DESKTOP-H2RFUD7", true });
 
-    if (fileExists("database.dat")) 
+    if (database->fileExists("database.dat"))
     {
         logger->addLog("Database file already exists.");
     }
     else 
     {
-        createDataBase(&addresses);
+        database->createDataBase(&addresses, std::move(logger));
+
+        logger = unique_ptr<loggernamespace::Logger>(new loggernamespace::Logger());
+
+        logger->initialize();
+
+    if (logger->isInitialized())
+    {
+        cerr << "Can't create logger" << endl;
+
+        exit(1);
+    }
     }
 
-    vector<userAddressInfo> nodesData{ getNodesData() };
+   
+
+    char hostname[100]{};
+
+    if (gethostname(hostname, sizeof(hostname)) == -1)
+    {
+        logger->addLog("Cannot get hostname.");
+
+        WSACleanup();
+
+        exit(1);
+    };
+
+    vector<userAddressInfo> nodesData{ getNodesData(hostname) };
 
     for (size_t i = 0; i < nodesData.size(); i++)
     {
@@ -394,18 +401,7 @@ int main()
         return 1;
     }
 
-    char hostname[100]{};
-
-    if (gethostname(hostname, sizeof(hostname)) == -1) 
-    {
-        logger->addLog("Cannot get hostname.");
-
-        WSACleanup();
-
-        closesocket(listenSocket);
-
-        exit(1);
-    };
+    
 
     string smt;
     
@@ -413,11 +409,9 @@ int main()
 
     for (size_t i{}; i < nodesData.size(); i++)
     {
-        //cout << "Connecting to:  " << nodesData[i].pcAddress << endl;
-
         logger->addLog("Connecting to:  " + nodesData[i].pcAddress);
 
-        SOCKET nodeSocket{ connectToNode(nodesData[i].pcAddress, DEFAULT_PORT) }; // <<<
+        SOCKET nodeSocket{ connectToNode(nodesData[i].pcAddress, DEFAULT_PORT) };
         if (!nodeSocket)
             continue;
         else {
@@ -570,106 +564,3 @@ int main()
 
     return 0;
 }
-
-//================DATABASE REALIZATION=====================
-bool fileExists(const string& filename)
-{
-    ifstream file(filename);
-    return file.good();
-}
-void createDataBase(vector<userAddressInfo>* addresses) {
-    fstream file("database.dat", ios::in | ios::out | ios::app);
-
-    if (!file) 
-    {
-        logger->addLog("Failed to open the database file.");
-        exit(EXIT_FAILURE);
-    }
-    for (const auto& address : *addresses) {
-        file << address.id << " " << address.pcAddress << " " << address.isDecisionMakerCenter << '\n';
-    }
-    file.close();
-}
-vector<userAddressInfo> readAddresses() {
-    char hostname[64];
-    if (gethostname(hostname, sizeof(hostname)) == -1) {
-        logger->addLog("Cannot get hostname in db.");
-    };
-    
-    vector<userAddressInfo> users;
-    userAddressInfo tempUser;
-    fstream file("database.dat", ios::in | ios::out | ios::app);
-    if (!file) {
-        logger->addLog("Failed to open the database file.");
-        exit(EXIT_FAILURE);
-    }
-    while (file) {
-        file >> tempUser.id >> tempUser.pcAddress >> tempUser.isDecisionMakerCenter;
-        if (!file)
-            break;
-        if (tempUser.pcAddress != hostname) 
-        {
-            users.push_back(tempUser);
-        }
-        else
-        {
-            isDecisionMakerCenter = tempUser.isDecisionMakerCenter;
-        }
-    }
-
-    file.close();
-
-    return users;
-}
-void deleteAddressById(string filename, int idToDelete) {
-    ifstream inputFile(filename);
-    if (!inputFile) {
-        logger->addLog("Failed to open the database file.");
-        return;
-    }
-    vector<userAddressInfo> addresses;
-    userAddressInfo tempAddress;
-    while (inputFile >> tempAddress.id >> tempAddress.pcAddress >> tempAddress.isDecisionMakerCenter) {
-        if (tempAddress.id != idToDelete) {
-            addresses.push_back(tempAddress);
-        }
-    }
-    inputFile.close();
-    updateDataBase(filename, &addresses);
-}
-void updateDataBase(string filename, vector<userAddressInfo>* addresses) {
-    ofstream outputFile(filename, std::ios::trunc);
-    if (!outputFile) {
-        logger->addLog("Failed to open the database file for writing.");
-        return;
-    }
-
-    for (const auto& address : *addresses) {
-        outputFile << address.id << ' ' << address.pcAddress << ' ' << address.isDecisionMakerCenter << '\n';
-    }
-    outputFile.close();
-}
-void addAddressToDataBase(string filename, string newAddress) {
-    vector<userAddressInfo> addresses = readAddresses();
-    for (const auto& address : addresses) {
-        if (address.pcAddress == newAddress) {
-            logger->addLog("This address is already exists in database.");
-            return;
-        }
-    }
-    ofstream file("database.dat", ios::app);
-    if (!file.is_open()) {
-        logger->addLog("Failed to open the database file in addAddressToDataBase.");
-        return;
-    }
-    file << generateUniqueId() << " " << newAddress << '\n';
-    file.close();
-    logger->addLog("Address was successfully added to database.");
-}
-long long generateUniqueId() {
-    std::random_device rd;
-    std::mt19937_64 generator(rd());
-    std::uniform_int_distribution<long long> distribution;
-    return distribution(generator) % (10000000 + 1);
-}
-//================DATABASE REALIZATION=====================
