@@ -9,11 +9,13 @@
 #include <limits>
 #include <random>
 #include <stdio.h>
+#include "Logger.h"
 
 #pragma comment (lib, "Ws2_32.lib")
 
-#define DEFAULT_PORT "27015"
-#define DEFAULT_BUFLEN 512
+constexpr auto DEFAULT_PORT = "27015";
+constexpr auto DEFAULT_BUFLEN = 512;
+constexpr auto DECISIONMAKER_WAIT_MILIS = 10000;
 
 using namespace std;
 
@@ -38,6 +40,7 @@ struct userAddressInfo
     Activity activity{}; //makes sense only if isDecisionMakerCenter = true
 };
 
+static unique_ptr<loggernamespace::Logger> logger{};
 static int decisionMakersAmount{};
 static bool exitThread{ false };
 static map<string, userAddressInfo> nodes{};
@@ -92,7 +95,7 @@ SOCKET generateSocket(PCSTR port)
 
         if (setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, (char*)&optval, sizeof(int)) == -1)
         {
-            cerr << "setsockopt() error" << endl;
+            logger->addLog("setsockopt() error");
 
             closesocket(listenSocket);
 
@@ -103,7 +106,7 @@ SOCKET generateSocket(PCSTR port)
 
         if (iResult == SOCKET_ERROR)
         {
-            cerr << "bind failed with error: " << WSAGetLastError() << endl;
+            logger->addLog("bind failed with error: " + to_string(WSAGetLastError()));
 
             freeaddrinfo(result);
             closesocket(listenSocket);
@@ -112,11 +115,30 @@ SOCKET generateSocket(PCSTR port)
         }
     }
 
+    void* addr{};
+
+    char ipstr[INET6_ADDRSTRLEN]{};
+
+    if (result->ai_family == AF_INET) 
+    {
+        struct sockaddr_in* ipv4 = (struct sockaddr_in*)result->ai_addr;
+        addr = &(ipv4->sin_addr);
+    }
+    else 
+    {
+        struct sockaddr_in6* ipv6 = (struct sockaddr_in6*)result->ai_addr;
+        addr = &(ipv6->sin6_addr);
+    }
+
+    inet_ntop(result->ai_family, addr, ipstr, sizeof ipstr);
+
+    logger->setAddress(ipstr);
+
     freeaddrinfo(result);
 
     if (listen(listenSocket, SOMAXCONN) == SOCKET_ERROR)
     {
-        cerr << "Listen failed with error: " << WSAGetLastError() << endl;
+        logger->addLog("Listen failed with error: " + to_string(WSAGetLastError()));
 
         closesocket(listenSocket);
 
@@ -134,7 +156,7 @@ SOCKET establishConnection(SOCKET socket)
 
     if (ClientSocket == INVALID_SOCKET)
     {
-        cerr << "Accept failed: " << WSAGetLastError() << endl;
+        logger->addLog("Accept failed: " + to_string(WSAGetLastError()));
 
         closesocket(socket);
 
@@ -150,7 +172,7 @@ void sendMessage(SOCKET socket, const char* sendBuf, int size)
 
     if (iResult == SOCKET_ERROR)
     {
-        cerr << "send failed: " << WSAGetLastError() << endl;
+        logger->addLog("send failed: " + to_string(WSAGetLastError()));
 
         closesocket(socket);
 
@@ -175,11 +197,11 @@ DWORD WINAPI connectNewNode(LPVOID socketParam)
     {
         SOCKET clientSocket{ establishConnection(listenSocket) };
 
-        cout << "Conecting to listenSocket" << endl;
+        logger->addLog("Conecting to listenSocket");
 
         if (clientSocket == -1)
         {
-            cerr << "Can't connect to client" << endl;
+            logger->addLog("Can't connect to client");
 
             continue;
         }
@@ -188,8 +210,6 @@ DWORD WINAPI connectNewNode(LPVOID socketParam)
 
         int size = recv(clientSocket, messageChunk, DEFAULT_BUFLEN - 1, 0);
 
-        cout << "ConnectNewNode Received:  " << messageChunk << endl;
-
         if (size == sizeof(Data))
         {
             memcpy(&data, messageChunk, sizeof(Data));
@@ -197,9 +217,8 @@ DWORD WINAPI connectNewNode(LPVOID socketParam)
             int response{ data.a + data.b };
 
             sendMessage(clientSocket, (char*)&response, sizeof(int));
-            cout << "ConnectNewNode Send:  " << response << endl;
             sendMessage(clientSocket, (char*)&isDecisionMakerCenterActive, sizeof(bool));
-            cout << "ConnectNewNode Send isDecisionMakerCenterActive:  " << isDecisionMakerCenterActive << endl;
+
             nodes[data.nodeName].activity.isActive = true;
 
             if (isDecisionMakerCenter && isDecisionMakerCenterActive)
@@ -207,13 +226,15 @@ DWORD WINAPI connectNewNode(LPVOID socketParam)
                 nodes[data.nodeName].activity.isDecisionMakerActive = generateNum(0, decisionMakersAmount) >= decisionMakersAmount / 2;
 
                 sendMessage(clientSocket, (char*)&nodes[data.nodeName].activity.isDecisionMakerActive, sizeof(bool));
-                cout << "ConnectNewNode make center active:  " << nodes[data.nodeName].activity.isDecisionMakerActive << endl;
+
+                logger->addLog("ConnectNewNode make center active:  " + to_string(nodes[data.nodeName].activity.isDecisionMakerActive));
             }
         }
         else if (size == sizeof(bool))
         {
-            cout << "Become center:  " << messageChunk[0] << endl;
             memcpy(&isDecisionMakerCenterActive, messageChunk, sizeof(bool));
+
+            logger->addLog("Is decision maker active: " + to_string(isDecisionMakerCenterActive));
         }
 
         closesocket(clientSocket);
@@ -225,17 +246,12 @@ DWORD WINAPI connectNewNode(LPVOID socketParam)
 DWORD WINAPI decisionMaker(LPVOID socketParam)
 {
     while (!exitThread) {
-        Sleep(10000);
-        cout << "decisionMaker worked, wait 10 sec" << endl;
+        Sleep(DECISIONMAKER_WAIT_MILIS);
+
         if (isDecisionMakerCenterActive)
         {
-            cout << "isDecisionMakerCenterActive if worked" << endl;
-            cout << "Size of nodes: " << nodes.size() << endl;
-
             for (auto iter{ nodes.begin() }; iter != nodes.end(); iter++)
             {
-                cout << "Iter second activity is active: " << iter->second.activity.isActive << endl;
-                cout << "Iter second activity is active: " << iter->second.isDecisionMakerCenter << endl;
                 if (iter->second.activity.isActive && iter->second.isDecisionMakerCenter)
                 {
                     SOCKET nodeSocket{ connectToNode(iter->second.pcAddress, DEFAULT_PORT) };
@@ -244,7 +260,7 @@ DWORD WINAPI decisionMaker(LPVOID socketParam)
 
                     sendMessage(nodeSocket, (char*)&sendData, sizeof(bool));
 
-                    cout << "decisionMaker of " << iter->second.pcAddress << " is " << sendData << endl;
+                    logger->addLog("decisionMaker of " + iter->second.pcAddress + " is " + to_string(sendData));
                 }
             }
         }
@@ -257,7 +273,6 @@ vector<userAddressInfo> getNodesData()
 {
     vector<userAddressInfo> nodeNames{};
 
-    //Get node names from db
     nodeNames = readAddresses();
 
     return nodeNames;
@@ -276,14 +291,14 @@ SOCKET connectToNode(string nodeName, PCSTR port)
     hints.ai_next = NULL;
 
     int iResult = getaddrinfo(nodeName.c_str(), port, &hints, &result);
+
     if (iResult != 0)
     {
-
-        cerr << "getaddrinfo failed: " << iResult<<" Name: "<< nodeName << endl;
+        logger->addLog("getaddrinfo failed: " + to_string(iResult) + " Name: " + nodeName);
 
         return 0;
     }
-    cout << "OK connectedToNode successfuly: " << nodeName << endl;
+
     int optval{ 1 };
 
     SOCKET nodeSocket{};
@@ -321,12 +336,24 @@ SOCKET connectToNode(string nodeName, PCSTR port)
 
 int main()
 {
+    logger = unique_ptr<loggernamespace::Logger>(new loggernamespace::Logger());
+
+    logger->initialize();
+
+    if (logger->isInitialized())
+    {
+        cerr << "Can't create logger" << endl;
+
+        return 1;
+    }
+
     WSADATA wsaData{};
     int iResult{ WSAStartup(MAKEWORD(2, 2), &wsaData) };
 
     if (iResult != 0)
     {
-        cerr << "WSAStartup failed with error: " << iResult << endl;
+        logger->addLog("WSAStartup failed with error: " + to_string(iResult));
+
         return 1;
     }
 
@@ -340,10 +367,12 @@ int main()
     addresses.push_back({ generateUniqueId(),"DESKTOP-09499TF", true });
     addresses.push_back({ generateUniqueId(),"DESKTOP-H2RFUD7", true });
 
-    if (fileExists("database.dat")) {
-        cout << "File already exists." << endl;
+    if (fileExists("database.dat")) 
+    {
+        logger->addLog("Database file already exists.");
     }
-    else {
+    else 
+    {
         createDataBase(&addresses);
     }
 
@@ -369,7 +398,7 @@ int main()
 
     if (gethostname(hostname, sizeof(hostname)) == -1) 
     {
-        cerr << "Cannot get hostname." << endl;
+        logger->addLog("Cannot get hostname.");
 
         WSACleanup();
 
@@ -378,15 +407,16 @@ int main()
         exit(1);
     };
 
-    
-
     string smt;
     
     bool ifTheOnlyDecisionMaker{ true };
 
     for (size_t i{}; i < nodesData.size(); i++)
     {
-        cout << "Connecting to:  " << nodesData[i].pcAddress << endl;
+        //cout << "Connecting to:  " << nodesData[i].pcAddress << endl;
+
+        logger->addLog("Connecting to:  " + nodesData[i].pcAddress);
+
         SOCKET nodeSocket{ connectToNode(nodesData[i].pcAddress, DEFAULT_PORT) }; // <<<
         if (!nodeSocket)
             continue;
@@ -396,7 +426,7 @@ int main()
             }
         }
 
-        cout << "Connected to " << nodesData[i].pcAddress << endl;
+        logger->addLog("Connected to " + nodesData[i].pcAddress + " succsessfully");
 
         Data sendData{};
 
@@ -407,7 +437,10 @@ int main()
 
         sendMessage(nodeSocket, (char*)&sendData, sizeof(Data));
 
-        cout << "Sending message: " << sendData.a << " " << sendData.b << " to " << nodesData[i].pcAddress << endl;
+        logger->addLog("Sending message: " + 
+            to_string(sendData.a) + " " + 
+            to_string(sendData.b) + " to " + 
+            nodesData[i].pcAddress);
 
         int receiveData{};
         bool receiveIsDecisionMakerNodeActive{};
@@ -415,7 +448,7 @@ int main()
 
         if (recv(nodeSocket, (char*)&receiveData, sizeof(int), NULL) <= 0)
         {
-            cerr << "Can`t receive data from: " << nodesData[i].pcAddress << endl;
+            logger->addLog("Can`t receive data from: " + nodesData[i].pcAddress);
 
             closesocket(nodeSocket);
 
@@ -424,13 +457,13 @@ int main()
 
         if (receiveData != sendData.a + sendData.b)
         {
-            cerr << "Invalid response from: " << nodesData[i].pcAddress << endl;
+            logger->addLog("Invalid response from: " + nodesData[i].pcAddress);
         }
         else
         {
             nodes[nodesData[i].pcAddress].activity.isActive = true;
 
-            cout << "Message was received" << endl;
+            logger->addLog("Message was received");
 
             if (nodesData[i].isDecisionMakerCenter && isDecisionMakerCenter)
             {
@@ -438,7 +471,7 @@ int main()
 
                 if (recv(nodeSocket, (char*)&receiveIsDecisionMakerNodeActive, sizeof(bool), NULL) <= 0)
                 {
-                    cerr << "Can`t receive data from: " << nodesData[i].pcAddress << endl;
+                    logger->addLog("Can`t receive data from: " + nodesData[i].pcAddress);
 
                     closesocket(nodeSocket);
 
@@ -449,7 +482,7 @@ int main()
                 {
                     if (recv(nodeSocket, (char*)&receiveIsDecisionMakerActive, sizeof(bool), NULL) <= 0)
                     {
-                        cerr << "Can`t receive data from: " << nodesData[i].pcAddress << endl;
+                        logger->addLog("Can`t receive data from: " + nodesData[i].pcAddress);
 
                         closesocket(nodeSocket);
 
@@ -463,8 +496,6 @@ int main()
 
         closesocket(nodeSocket);
     }
-
-
 
     if (ifTheOnlyDecisionMaker && isDecisionMakerCenter)
     {
@@ -485,7 +516,7 @@ int main()
 
     if (connectNewNodeThread == NULL)
     {
-        cerr << "Can't create thread connectNewNodeThread" << endl;
+        logger->addLog("Can't create thread connectNewNodeThread");
 
         closesocket(listenSocket);
 
@@ -498,7 +529,6 @@ int main()
     
     if (isDecisionMakerCenter)
     {
-        cout<<"DecisionMaker if start"<<endl;
         decisionMakerCenterThread =
             CreateThread(
                 NULL,
@@ -511,7 +541,7 @@ int main()
 
         if (decisionMakerCenterThread == NULL)
         {
-            cerr << "Can't create thread decisionMakerCenterThread" << endl;
+            logger->addLog("Can't create thread decisionMakerCenterThread");
 
             exitThread = true;
 
@@ -523,6 +553,8 @@ int main()
 
             return 1;
         }
+
+        logger->addLog("Decision maker thread started");
     }
 
     getchar();
@@ -548,8 +580,9 @@ bool fileExists(const string& filename)
 void createDataBase(vector<userAddressInfo>* addresses) {
     fstream file("database.dat", ios::in | ios::out | ios::app);
 
-    if (!file) {
-        cerr << "Failed to open the database file." << endl;
+    if (!file) 
+    {
+        logger->addLog("Failed to open the database file.");
         exit(EXIT_FAILURE);
     }
     for (const auto& address : *addresses) {
@@ -560,22 +593,22 @@ void createDataBase(vector<userAddressInfo>* addresses) {
 vector<userAddressInfo> readAddresses() {
     char hostname[64];
     if (gethostname(hostname, sizeof(hostname)) == -1) {
-        cout << "Cannot get hostname." << endl;
+        logger->addLog("Cannot get hostname in db.");
     };
-    cout << "Host name: " << hostname << endl;
+    
     vector<userAddressInfo> users;
     userAddressInfo tempUser;
     fstream file("database.dat", ios::in | ios::out | ios::app);
     if (!file) {
-        cerr << "Failed to open the database file." << endl;
+        logger->addLog("Failed to open the database file.");
         exit(EXIT_FAILURE);
     }
     while (file) {
         file >> tempUser.id >> tempUser.pcAddress >> tempUser.isDecisionMakerCenter;
         if (!file)
             break;
-        if (tempUser.pcAddress != hostname) {
-            cout << "Host name not skipped: " << tempUser.pcAddress << endl;
+        if (tempUser.pcAddress != hostname) 
+        {
             users.push_back(tempUser);
         }
         else
@@ -583,17 +616,15 @@ vector<userAddressInfo> readAddresses() {
             isDecisionMakerCenter = tempUser.isDecisionMakerCenter;
         }
     }
+
     file.close();
-    for (size_t i = 0; i < 2; i++)
-    {
-        cout << "Adress: " << users[i].pcAddress << " Center: " << users[i].isDecisionMakerCenter << endl;
-    }
+
     return users;
 }
 void deleteAddressById(string filename, int idToDelete) {
     ifstream inputFile(filename);
     if (!inputFile) {
-        std::cerr << "Failed to open the database file." << std::endl;
+        logger->addLog("Failed to open the database file.");
         return;
     }
     vector<userAddressInfo> addresses;
@@ -609,7 +640,7 @@ void deleteAddressById(string filename, int idToDelete) {
 void updateDataBase(string filename, vector<userAddressInfo>* addresses) {
     ofstream outputFile(filename, std::ios::trunc);
     if (!outputFile) {
-        std::cerr << "Failed to open the database file for writing." << std::endl;
+        logger->addLog("Failed to open the database file for writing.");
         return;
     }
 
@@ -622,18 +653,18 @@ void addAddressToDataBase(string filename, string newAddress) {
     vector<userAddressInfo> addresses = readAddresses();
     for (const auto& address : addresses) {
         if (address.pcAddress == newAddress) {
-            cerr << "This address is already exists in database." << endl;
+            logger->addLog("This address is already exists in database.");
             return;
         }
     }
     ofstream file("database.dat", ios::app);
     if (!file.is_open()) {
-        cerr << "Failed to open the database file in addAddressToDataBase." << endl;
+        logger->addLog("Failed to open the database file in addAddressToDataBase.");
         return;
     }
     file << generateUniqueId() << " " << newAddress << '\n';
     file.close();
-    cout << "Address was successfully added to database." << endl;
+    logger->addLog("Address was successfully added to database.");
 }
 long long generateUniqueId() {
     std::random_device rd;
