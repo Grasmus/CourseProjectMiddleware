@@ -28,12 +28,68 @@ static map<string, userAddressInfo> nodes{};
 static bool isDecisionMakerCenter{};
 static bool isDecisionMakerCenterActive{};
 // We need to use protorypes
-SOCKET connectToNode(string nodeName, PCSTR port);
-SOCKET generateSocket(PCSTR port)
+
+SOCKET connectToNode(string nodeName, PCSTR port)
 {
     struct addrinfo* result = nullptr, * ptr = nullptr, hints{};
 
-    hints.ai_family = AF_UNSPEC;
+    hints.ai_family = AF_INET;
+    hints.ai_protocol = IPPROTO_TCP;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = 0;
+    hints.ai_addr = NULL;
+    hints.ai_canonname = NULL;
+    hints.ai_next = NULL;
+
+    int iResult = getaddrinfo(nodeName.c_str(), port, &hints, &result);
+
+    if (iResult != 0)
+    {
+        logger->addLog("getaddrinfo failed: " + to_string(iResult) + " Name: " + nodeName);
+
+        return 0;
+    }
+
+    int optval{ 1 };
+
+    SOCKET nodeSocket{};
+
+    addrinfo* resultIterator{};
+
+    for (resultIterator = result; resultIterator != NULL; resultIterator = resultIterator->ai_next)
+    {
+        nodeSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+
+        if (nodeSocket == INVALID_SOCKET)
+        {
+            continue;
+        }
+
+        if (connect(nodeSocket, resultIterator->ai_addr, resultIterator->ai_addrlen) == -1)
+        {
+            closesocket(nodeSocket);
+
+            continue;
+        }
+
+        break;
+    }
+
+    if (resultIterator == NULL)
+    {
+        return 0;
+    }
+
+    freeaddrinfo(resultIterator);
+
+    return nodeSocket;
+}
+
+SOCKET generateSocket(PCSTR port, const char* hostname)
+{
+    struct addrinfo* result = nullptr, * ptr = nullptr, hints{};
+
+    hints.ai_family = AF_INET;
     hints.ai_protocol = IPPROTO_TCP;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
@@ -41,11 +97,11 @@ SOCKET generateSocket(PCSTR port)
     hints.ai_canonname = NULL;
     hints.ai_next = NULL;
 
-    int iResult = getaddrinfo(NULL, port, &hints, &result);
+    int iResult = getaddrinfo(hostname, port, &hints, &result);
 
     if (iResult != 0)
     {
-        cerr << "getaddrinfo failed: " << iResult << endl;
+        logger->addLog("getaddrinfo failed: " + to_string(iResult));
 
         return -1;
     }
@@ -85,22 +141,19 @@ SOCKET generateSocket(PCSTR port)
         }
     }
 
-    void* addr{};
+    IN_ADDR* addr{};
 
-    char ipstr[INET6_ADDRSTRLEN]{};
+    char ipstr[INET_ADDRSTRLEN]{};
 
-    if (result->ai_family == AF_INET) 
-    {
-        struct sockaddr_in* ipv4 = (struct sockaddr_in*)result->ai_addr;
-        addr = &(ipv4->sin_addr);
-    }
-    else 
-    {
-        struct sockaddr_in6* ipv6 = (struct sockaddr_in6*)result->ai_addr;
-        addr = &(ipv6->sin6_addr);
-    }
+    struct sockaddr_in* ipv4 = (struct sockaddr_in*)result->ai_addr;
+    addr = &(ipv4->sin_addr);
 
     inet_ntop(result->ai_family, addr, ipstr, sizeof ipstr);
+    
+    if (ipstr == NULL)
+    {
+        logger->addLog("inet_ntop error: " + to_string(WSAGetLastError()));
+    }
     
     logger->setAddress(ipstr);
 
@@ -160,54 +213,79 @@ long long generateNum(int min, int max) {
 DWORD WINAPI connectNewNode(LPVOID socketParam)
 {
     SOCKET listenSocket{ *(SOCKET*)socketParam };
-    int  activity{};
+    int activity{};
     Data data{};
+    fd_set rfds{};
+    timeval time{};
+    time.tv_sec = 1;
 
     while (!exitThread)
     {
-        SOCKET clientSocket{ establishConnection(listenSocket) };
+        FD_ZERO(&rfds);
+        FD_SET(listenSocket, &rfds);
 
-        logger->addLog("Conecting to listenSocket");
+        activity = select(listenSocket + 1, &rfds, NULL, NULL, &time);
 
-        if (clientSocket == -1)
+        if ((activity <= 0) && (errno != EINTR))
         {
-            logger->addLog("Can't connect to client");
-
             continue;
         }
 
-        char messageChunk[DEFAULT_BUFLEN]{};
-
-        int size = recv(clientSocket, messageChunk, DEFAULT_BUFLEN - 1, 0);
-
-        if (size == sizeof(Data))
+        if (FD_ISSET(listenSocket, &rfds))
         {
-            memcpy(&data, messageChunk, sizeof(Data));
+            SOCKET clientSocket{ establishConnection(listenSocket) };
 
-            int response{ data.a + data.b };
+            logger->addLog("Conecting to listenSocket");
 
-            sendMessage(clientSocket, (char*)&response, sizeof(int));
-            sendMessage(clientSocket, (char*)&isDecisionMakerCenterActive, sizeof(bool));
-
-            nodes[data.nodeName].activity.isActive = true;
-
-            if (isDecisionMakerCenter && isDecisionMakerCenterActive)
+            if (clientSocket == -1)
             {
-                nodes[data.nodeName].activity.isDecisionMakerActive = generateNum(0, decisionMakersAmount) >= decisionMakersAmount / 2;
+                logger->addLog("Can't connect to client");
 
-                sendMessage(clientSocket, (char*)&nodes[data.nodeName].activity.isDecisionMakerActive, sizeof(bool));
-
-                logger->addLog("ConnectNewNode make center active:  " + to_string(nodes[data.nodeName].activity.isDecisionMakerActive));
+                continue;
             }
-        }
-        else if (size == sizeof(bool))
-        {
-            memcpy(&isDecisionMakerCenterActive, messageChunk, sizeof(bool));
 
-            logger->addLog("Is decision maker active: " + to_string(isDecisionMakerCenterActive));
-        }
+            char messageChunk[DEFAULT_BUFLEN]{};
 
-        closesocket(clientSocket);
+            int size = recv(clientSocket, messageChunk, DEFAULT_BUFLEN - 1, 0);
+
+            if (size == sizeof(Data))
+            {
+                memcpy(&data, messageChunk, sizeof(Data));
+
+                int response{ data.a + data.b };
+
+                if (nodes[data.nodeName].activity.isActive)
+                {
+                    nodes[data.nodeName].activity.isActive = false;
+
+                    closesocket(clientSocket);
+
+                    continue;
+                }
+
+                sendMessage(clientSocket, (char*)&response, sizeof(int));
+                sendMessage(clientSocket, (char*)&isDecisionMakerCenterActive, sizeof(bool));
+
+                nodes[data.nodeName].activity.isActive = true;
+
+                if (isDecisionMakerCenter && isDecisionMakerCenterActive)
+                {
+                    nodes[data.nodeName].activity.isDecisionMakerActive = generateNum(0, decisionMakersAmount) >= decisionMakersAmount / 2;
+
+                    sendMessage(clientSocket, (char*)&nodes[data.nodeName].activity.isDecisionMakerActive, sizeof(bool));
+
+                    logger->addLog("ConnectNewNode make center active:  " + to_string(nodes[data.nodeName].activity.isDecisionMakerActive));
+                }
+            }
+            else if (size == sizeof(bool))
+            {
+                memcpy(&isDecisionMakerCenterActive, messageChunk, sizeof(bool));
+
+                logger->addLog("Is decision maker active: " + to_string(isDecisionMakerCenterActive));
+            }
+
+            closesocket(clientSocket);
+        }
     }
 
     return 0;
@@ -243,76 +321,9 @@ vector<userAddressInfo> getNodesData(string hostname)
 {
     vector<userAddressInfo> nodeNames{};
 
-    nodeNames = database->readAddresses(&isDecisionMakerCenter, hostname, std::move(logger));
-
-    logger = unique_ptr<loggernamespace::Logger>(new loggernamespace::Logger());
-
-    logger->initialize();
-
-    if (logger->isInitialized())
-    {
-        cerr << "Can't create logger" << endl;
-
-        exit(1);
-    }
+    nodeNames = database->readAddresses(&isDecisionMakerCenter, hostname, logger);
 
     return nodeNames;
-}
-
-SOCKET connectToNode(string nodeName, PCSTR port)
-{
-    struct addrinfo* result = nullptr, * ptr = nullptr, hints{};
-
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_protocol = IPPROTO_TCP;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = 0;
-    hints.ai_addr = NULL;
-    hints.ai_canonname = NULL;
-    hints.ai_next = NULL;
-
-    int iResult = getaddrinfo(nodeName.c_str(), port, &hints, &result);
-
-    if (iResult != 0)
-    {
-        logger->addLog("getaddrinfo failed: " + to_string(iResult) + " Name: " + nodeName);
-
-        return 0;
-    }
-
-    int optval{ 1 };
-
-    SOCKET nodeSocket{};
-
-    addrinfo* resultIterator{};
-
-    for (resultIterator = result; resultIterator != NULL; resultIterator = resultIterator->ai_next)
-    {
-        nodeSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-
-        if (nodeSocket == INVALID_SOCKET)
-        {
-            continue;
-        }
-
-        if (connect(nodeSocket, resultIterator->ai_addr, resultIterator->ai_addrlen) == -1)
-        {
-            closesocket(nodeSocket);
-
-            continue;
-        }
-
-        break;
-    }
-
-    if (resultIterator == NULL)
-    {
-        return 0;
-    }
-
-    freeaddrinfo(resultIterator);
-
-    return nodeSocket;
 }
 
 int main()
@@ -340,38 +351,6 @@ int main()
         return 1;
     }
 
-#pragma region database
-
-    int idToDelete;
-    string addressToAdd;
-    vector<userAddressInfo> addresses;
-
-    addresses.push_back({ database->generateUniqueId(),"DESKTOP-LT61FS4", true });
-    addresses.push_back({ database->generateUniqueId(),"DESKTOP-09499TF", true });
-    addresses.push_back({ database->generateUniqueId(),"DESKTOP-H2RFUD7", true });
-
-    if (database->fileExists("database.dat"))
-    {
-        logger->addLog("Database file already exists.");
-    }
-    else 
-    {
-        database->createDataBase(&addresses, std::move(logger));
-
-        logger = unique_ptr<loggernamespace::Logger>(new loggernamespace::Logger());
-
-        logger->initialize();
-
-    if (logger->isInitialized())
-    {
-        cerr << "Can't create logger" << endl;
-
-        exit(1);
-    }
-    }
-
-   
-
     char hostname[100]{};
 
     if (gethostname(hostname, sizeof(hostname)) == -1)
@@ -383,6 +362,29 @@ int main()
         exit(1);
     };
 
+#pragma region database
+
+    int idToDelete;
+    string addressToAdd;
+    vector<userAddressInfo> addresses;
+
+    //Computer names
+    addresses.push_back({ database->generateUniqueId(),"Comp9", true });
+    addresses.push_back({ database->generateUniqueId(),"Grasmus", false });
+    addresses.push_back({ database->generateUniqueId(),"Comp11", true });
+    addresses.push_back({ database->generateUniqueId(),"Comp10", true });
+    addresses.push_back({ database->generateUniqueId(),"Comp12", false });
+    addresses.push_back({ database->generateUniqueId(),"Comp13", false });
+
+    if (database->fileExists("database.dat"))
+    {
+        logger->addLog("Database file already exists.");
+    }
+    else 
+    {
+        database->createDataBase(&addresses, logger);
+    }
+
     vector<userAddressInfo> nodesData{ getNodesData(hostname) };
 
     for (size_t i = 0; i < nodesData.size(); i++)
@@ -392,7 +394,7 @@ int main()
 
 #pragma endregion
 
-    SOCKET listenSocket{ generateSocket(DEFAULT_PORT) };
+    SOCKET listenSocket{ generateSocket(DEFAULT_PORT, hostname) };
 
     if (listenSocket == -1)
     {
@@ -400,8 +402,6 @@ int main()
 
         return 1;
     }
-
-    
 
     string smt;
     
@@ -412,6 +412,7 @@ int main()
         logger->addLog("Connecting to:  " + nodesData[i].pcAddress);
 
         SOCKET nodeSocket{ connectToNode(nodesData[i].pcAddress, DEFAULT_PORT) };
+
         if (!nodeSocket)
             continue;
         else {
@@ -553,10 +554,37 @@ int main()
 
     getchar();
 
+    for (size_t i{}; i < nodesData.size(); i++)
+    {
+        Data dataToDisconnect{};
+
+        memcpy(dataToDisconnect.nodeName, hostname, sizeof(dataToDisconnect.nodeName));
+
+        if (nodes[nodesData[i].pcAddress].activity.isActive)
+        {
+            SOCKET nodeSocket{ connectToNode(nodesData[i].pcAddress, DEFAULT_PORT) };
+
+            if (!nodeSocket)
+            {
+                continue;
+            }
+
+            logger->addLog("Connected to " + nodesData[i].pcAddress + " succsessfully");
+
+            sendMessage(nodeSocket, (char*)&dataToDisconnect, sizeof(Data));
+
+            closesocket(nodeSocket);
+        }
+    }
+
     exitThread = true;
 
     WaitForSingleObject(connectNewNodeThread, INFINITE);
-    WaitForSingleObject(decisionMakerCenterThread, INFINITE);
+    
+    if (isDecisionMakerCenter)
+    {
+        WaitForSingleObject(decisionMakerCenterThread, INFINITE);
+    }
 
     closesocket(listenSocket);
 

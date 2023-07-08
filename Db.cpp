@@ -23,7 +23,7 @@ namespace db{
 		return distribution(generator) % (10000000 + 1);
 	}
 
-	void Db::createDataBase(vector<userAddressInfo>* addresses, unique_ptr<loggernamespace::Logger> logger)
+	void Db::createDataBase(vector<userAddressInfo>* addresses, unique_ptr<loggernamespace::Logger>& logger)
 	{
 		fstream file("database.dat", ios::in | ios::out | ios::app);
 
@@ -38,7 +38,7 @@ namespace db{
 		file.close();
 	}
 
-	vector<userAddressInfo> Db::readAddresses(bool * isDecisionMakerCenter, string hostname, unique_ptr<loggernamespace::Logger> logger)
+	vector<userAddressInfo> Db::readAddresses(bool * isDecisionMakerCenter, string hostname, unique_ptr<loggernamespace::Logger>& logger)
 	{
 		vector<userAddressInfo> users;
 		userAddressInfo tempUser;
@@ -66,25 +66,7 @@ namespace db{
 		return users;
 	}
 
-	//void Db::deleteAddressById(string filename, int idToDelete, loggernamespace::Logger* logger)
-	//{
-	//	ifstream inputFile(filename);
-	//	if (!inputFile) {
-	//		logger->addLog("Failed to open the database file.");
-	//		return;
-	//	}
-	//	vector<userAddressInfo> addresses;
-	//	userAddressInfo tempAddress;
-	//	while (inputFile >> tempAddress.id >> tempAddress.pcAddress >> tempAddress.isDecisionMakerCenter) {
-	//		if (tempAddress.id != idToDelete) {
-	//			addresses.push_back(tempAddress);
-	//		}
-	//	}
-	//	inputFile.close();
-	//	updateDataBase(filename, &addresses);
-	//}
-
-	void Db::updateDataBase(string filename, vector<userAddressInfo>* addresses, unique_ptr<loggernamespace::Logger> logger)
+	void Db::updateDataBase(string filename, vector<userAddressInfo>* addresses, unique_ptr<loggernamespace::Logger>& logger)
 	{
 		ofstream outputFile(filename, std::ios::trunc);
 		if (!outputFile) {
@@ -97,24 +79,4 @@ namespace db{
 		}
 		outputFile.close();
 	}
-
-	/*void Db::addAddressToDataBase(string filename, string newAddress, loggernamespace::Logger* logger)
-	{
-		vector<userAddressInfo> addresses = readAddresses();
-		for (const auto& address : addresses) {
-			if (address.pcAddress == newAddress) {
-				logger->addLog("This address is already exists in database.");
-				return;
-			}
-		}
-		ofstream file("database.dat", ios::app);
-		if (!file.is_open()) {
-			logger->addLog("Failed to open the database file in addAddressToDataBase.");
-			return;
-		}
-		file << generateUniqueId() << " " << newAddress << '\n';
-		file.close();
-		logger->addLog("Address was successfully added to database.");
-	}*/
-
 }
