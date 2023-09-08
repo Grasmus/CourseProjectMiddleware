@@ -60,7 +60,21 @@ namespace loggernamespace
 
 	void Logger::initialize()
 	{
-		file.open(path, std::ios::app | std::ios::out);
+		std::filesystem::path folderPath(folderName);
+
+		if (!std::filesystem::exists(folderPath))
+		{
+			if (std::filesystem::create_directory(folderPath))
+			{
+				std::cerr << "Folder created!" << std::endl;
+			}
+			else
+			{
+				std::cerr << "Folder not createdó." << std::endl;
+			}
+		}
+
+		file.open(logsPath, std::ios::app | std::ios::out);
 
 		if (!file.is_open())
 		{
